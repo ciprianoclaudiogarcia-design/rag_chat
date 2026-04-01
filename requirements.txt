@@ -1,0 +1,7 @@
+streamlit
+requests
+python-dotenv
+langchain-community
+sentence-transformers
+chromadb
+streamlit-authenticator
