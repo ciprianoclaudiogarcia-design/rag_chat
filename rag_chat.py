@@ -1,61 +1,61 @@
+import streamlit as st
+import streamlit_authenticator as stauth
+import requests
+import os
+import re
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from sentence_transformers import CrossEncoder, SentenceTransformer, util
+
+# =========================
+# LOGIN
+# =========================
+names = ["Claudio", "Equipe"]
+usernames = ["claudio", "equipe"]
+passwords = ["123456", "senha123"]
+
+hashed_passwords = stauth.Hasher(passwords).generate()
+
+authenticator = stauth.Authenticate(
+    names,
+    usernames,
+    hashed_passwords,
+    "chat_cookie",
+    "abc123",
+    cookie_expiry_days=1
+)
+
+name, authentication_status, username = authenticator.login("Login", "main")
+
+if authentication_status == False:
+    st.error("Usuário ou senha incorretos")
+    st.stop()
+
+if authentication_status == None:
+    st.warning("Digite usuário e senha")
+    st.stop()
+
+# =========================
+# APP PROTEGIDO
+# =========================
 if authentication_status:
 
-
-    import streamlit as st
-    import streamlit_authenticator as stauth
-
-    # -------------------------
-    # USUÁRIOS
-    # -------------------------
-    names = ["Claudio", "Equipe"]
-    usernames = ["claudio", "equipe"]
-    passwords = ["123456", "senha123"]
-
-    hashed_passwords = stauth.Hasher(passwords).generate()
-
-    authenticator = stauth.Authenticate(
-        names,
-        usernames,
-        hashed_passwords,
-        "chat_cookie",
-        "abc123",
-        cookie_expiry_days=1
-    )
-
-    name, authentication_status, username = authenticator.login("Login", "main")
-
-    if authentication_status == False:
-        st.error("Usuário ou senha incorretos")
-        st.stop()
-
-    if authentication_status == None:
-        st.warning("Digite usuário e senha")
-        st.stop()
-
-    if authentication_status:
-        authenticator.logout("Logout", "sidebar")
-        st.sidebar.write(f"Bem-vindo, {name}")
-    # Fim da autenticação
-
-    #Inicio do codigo
-    import streamlit as st
-    import requests
-    import os
-    import re
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import Chroma
-    from sentence_transformers import CrossEncoder, SentenceTransformer, util
+    authenticator.logout("Logout", "sidebar")
+    st.sidebar.write(f"Bem-vindo, {name}")
 
     # =========================
     # CONFIG
     # =========================
-    API_KEY = os.getenv("OPENROUTER_API_KEY")
-    MODEL = "deepseek/deepseek-chat"
+    try:
+        API_KEY = st.secrets["OPENROUTER_API_KEY"]
+    except:
+        API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+    MODEL = "deepseek/deepseek-chat"
     CHROMA_DIR = "chroma_db"
     MEMORY_DIR = "memory_db"
 
@@ -150,17 +150,17 @@ if authentication_status:
         memoria_atual = chat_data["memoria_resumo"]
 
         prompt = f"""
-    Resuma a conversa mantendo apenas o essencial.
+Resuma a conversa mantendo apenas o essencial.
 
-    MEMÓRIA:
-    {memoria_atual}
+MEMÓRIA:
+{memoria_atual}
 
-    NOVO:
-    Pergunta: {pergunta}
-    Resposta: {resposta}
+NOVO:
+Pergunta: {pergunta}
+Resposta: {resposta}
 
-    Resumo curto:
-    """
+Resumo curto:
+"""
 
         try:
             r = requests.post(
@@ -226,26 +226,26 @@ if authentication_status:
         chat_data = st.session_state["chats"][st.session_state["chat_atual"]]
 
         return f"""
-    Responda em texto corrido.
+Responda em texto corrido.
 
-    Prioridade:
-    1. Memória da conversa
-    2. Contexto dos documentos
+Prioridade:
+1. Memória da conversa
+2. Contexto dos documentos
 
-    Se não souber, diga NÃO ENCONTRADO.
+Se não souber, diga NÃO ENCONTRADO.
 
-    MEMÓRIA RESUMIDA:
-    {chat_data["memoria_resumo"]}
+MEMÓRIA RESUMIDA:
+{chat_data["memoria_resumo"]}
 
-    MEMÓRIA RECUPERADA:
-    {memoria}
+MEMÓRIA RECUPERADA:
+{memoria}
 
-    CONTEXTO:
-    {contexto_rag}
+CONTEXTO:
+{contexto_rag}
 
-    PERGUNTA:
-    {pergunta}
-    """
+PERGUNTA:
+{pergunta}
+"""
 
     # =========================
     # LLM
@@ -281,7 +281,6 @@ if authentication_status:
         nome_chat_atual = st.session_state["chat_atual"]
         chat_data = st.session_state["chats"][nome_chat_atual]
 
-        # 🔥 RENOMEAR CHAT NA PRIMEIRA PERGUNTA
         if len(chat_data["mensagens"]) == 0:
             novo_nome = gerar_nome_chat(pergunta)
 
@@ -349,16 +348,13 @@ if authentication_status:
             with st.expander("📚 Fontes"):
                 for f in item["fontes"]:
                     st.markdown(f"""
-    **{f['arquivo']} (pág {f['pagina']+1})**
+**{f['arquivo']} (pág {f['pagina']+1})**
 
-    > {f['trecho']}
-    """)
+> {f['trecho']}
+""")
 
         st.divider()
 
-    # =========================
-    # INPUT
-    # =========================
     st.text_input(
         "Digite sua pergunta...",
         key="input",
