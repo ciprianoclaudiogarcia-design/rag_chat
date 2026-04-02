@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit_authenticator as stauth
 import requests
 import os
 import re
@@ -12,144 +11,105 @@ from langchain_community.vectorstores import Chroma
 from sentence_transformers import CrossEncoder, SentenceTransformer, util
 
 # =========================
-# LOGIN
+# CONFIG
 # =========================
-names = ["Claudio", "Equipe"]
-usernames = ["claudio", "equipe"]
-passwords = ["123456", "senha123"]
+API_KEY = os.getenv("OPENROUTER_API_KEY")
+MODEL = "deepseek/deepseek-chat"
 
-hashed_passwords = stauth.Hasher(passwords).generate()
+CHROMA_DIR = "chroma_db"
+MEMORY_DIR = "memory_db"
 
-authenticator = stauth.Authenticate(
-    names,
-    usernames,
-    hashed_passwords,
-    "chat_cookie",
-    "abc123",
-    cookie_expiry_days=1
-)
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-name, authentication_status, username = authenticator.login("Login", "main")
-
-if authentication_status == False:
-    st.error("Usuário ou senha incorretos")
-    st.stop()
-
-if authentication_status == None:
-    st.warning("Digite usuário e senha")
-    st.stop()
+st.set_page_config(layout="wide")
 
 # =========================
-# APP PROTEGIDO
+# CSS
 # =========================
-if authentication_status:
+st.markdown("""
+<style>
+div[data-baseweb="input"] input {
+    border: 2px solid black !important;
+    border-radius: 8px !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
-    authenticator.logout("Logout", "sidebar")
-    st.sidebar.write(f"Bem-vindo, {name}")
+# =========================
+# BASES
+# =========================
+@st.cache_resource
+def carregar_base():
+    embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    return Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings)
 
-    # =========================
-    # CONFIG
-    # =========================
-    try:
-        API_KEY = st.secrets["OPENROUTER_API_KEY"]
-    except:
-        API_KEY = os.getenv("OPENROUTER_API_KEY")
+@st.cache_resource
+def carregar_memoria():
+    embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    return Chroma(persist_directory=MEMORY_DIR, embedding_function=embeddings)
 
-    MODEL = "deepseek/deepseek-chat"
-    CHROMA_DIR = "chroma_db"
-    MEMORY_DIR = "memory_db"
+vectorstore = carregar_base()
+memory_store = carregar_memoria()
 
-    reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
+# =========================
+# STATE MULTI-CHAT
+# =========================
+if "chats" not in st.session_state:
+    st.session_state["chats"] = {}
 
-    st.set_page_config(layout="wide")
+if "chat_atual" not in st.session_state:
+    st.session_state["chat_atual"] = "Chat 1"
 
-    # =========================
-    # CSS
-    # =========================
-    st.markdown("""
-    <style>
-    div[data-baseweb="input"] input {
-        border: 2px solid black !important;
-        border-radius: 8px !important;
+if st.session_state["chat_atual"] not in st.session_state["chats"]:
+    st.session_state["chats"][st.session_state["chat_atual"]] = {
+        "mensagens": [],
+        "memoria_resumo": ""
     }
-    </style>
-    """, unsafe_allow_html=True)
 
-    # =========================
-    # BASES
-    # =========================
-    @st.cache_resource
-    def carregar_base():
-        embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-        return Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings)
+# =========================
+# SIDEBAR
+# =========================
+st.sidebar.title("💬 Conversas")
 
-    @st.cache_resource
-    def carregar_memoria():
-        embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-        return Chroma(persist_directory=MEMORY_DIR, embedding_function=embeddings)
+if st.sidebar.button("➕ Novo Chat"):
+    novo_nome = f"Chat {len(st.session_state['chats']) + 1}"
+    st.session_state["chat_atual"] = novo_nome
+    st.session_state["chats"][novo_nome] = {
+        "mensagens": [],
+        "memoria_resumo": ""
+    }
 
-    vectorstore = carregar_base()
-    memory_store = carregar_memoria()
+for nome in list(st.session_state["chats"].keys()):
+    if st.sidebar.button(nome):
+        st.session_state["chat_atual"] = nome
 
-    # =========================
-    # STATE MULTI-CHAT
-    # =========================
-    if "chats" not in st.session_state:
-        st.session_state["chats"] = {}
+st.sidebar.markdown("---")
+st.sidebar.write(f"Chat atual: **{st.session_state['chat_atual']}**")
 
-    if "chat_atual" not in st.session_state:
-        st.session_state["chat_atual"] = "Chat 1"
+# =========================
+# FUNÇÃO NOME DO CHAT
+# =========================
+def gerar_nome_chat(pergunta):
+    pergunta = pergunta.strip().replace("\n", " ")
+    return pergunta[:40] + ("..." if len(pergunta) > 40 else "")
 
-    if st.session_state["chat_atual"] not in st.session_state["chats"]:
-        st.session_state["chats"][st.session_state["chat_atual"]] = {
-            "mensagens": [],
-            "memoria_resumo": ""
-        }
+# =========================
+# MEMÓRIA
+# =========================
+def pergunta_dependente(pergunta):
+    gatilhos = ["explique", "melhor", "isso", "aquilo", "detalhe", "como assim"]
+    return any(g in pergunta.lower() for g in gatilhos)
 
-    # =========================
-    # SIDEBAR
-    # =========================
-    st.sidebar.title("💬 Conversas")
+def salvar_memoria(pergunta, resposta):
+    texto = f"Pergunta: {pergunta}\nResposta: {resposta}"
+    memory_store.add_texts([texto])
 
-    if st.sidebar.button("➕ Novo Chat"):
-        novo_nome = f"Chat {len(st.session_state['chats']) + 1}"
-        st.session_state["chat_atual"] = novo_nome
-        st.session_state["chats"][novo_nome] = {
-            "mensagens": [],
-            "memoria_resumo": ""
-        }
+def atualizar_resumo(pergunta, resposta):
+    chat_data = st.session_state["chats"][st.session_state["chat_atual"]]
+    memoria_atual = chat_data["memoria_resumo"]
 
-    for nome in list(st.session_state["chats"].keys()):
-        if st.sidebar.button(nome):
-            st.session_state["chat_atual"] = nome
-
-    st.sidebar.markdown("---")
-    st.sidebar.write(f"Chat atual: **{st.session_state['chat_atual']}**")
-
-    # =========================
-    # FUNÇÃO NOME DO CHAT
-    # =========================
-    def gerar_nome_chat(pergunta):
-        pergunta = pergunta.strip().replace("\n", " ")
-        return pergunta[:40] + ("..." if len(pergunta) > 40 else "")
-
-    # =========================
-    # MEMÓRIA
-    # =========================
-    def pergunta_dependente(pergunta):
-        gatilhos = ["explique", "melhor", "isso", "aquilo", "detalhe", "como assim"]
-        return any(g in pergunta.lower() for g in gatilhos)
-
-    def salvar_memoria(pergunta, resposta):
-        texto = f"Pergunta: {pergunta}\nResposta: {resposta}"
-        memory_store.add_texts([texto])
-
-    def atualizar_resumo(pergunta, resposta):
-        chat_data = st.session_state["chats"][st.session_state["chat_atual"]]
-        memoria_atual = chat_data["memoria_resumo"]
-
-        prompt = f"""
+    prompt = f"""
 Resuma a conversa mantendo apenas o essencial.
 
 MEMÓRIA:
@@ -162,70 +122,70 @@ Resposta: {resposta}
 Resumo curto:
 """
 
-        try:
-            r = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": MODEL,
-                    "messages": [
-                        {"role": "system", "content": "Resuma contexto."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.2
-                }
-            )
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content": "Resuma contexto."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.2
+            }
+        )
 
-            resumo = r.json()["choices"][0]["message"]["content"]
-            chat_data["memoria_resumo"] = resumo[:800]
+        resumo = r.json()["choices"][0]["message"]["content"]
+        chat_data["memoria_resumo"] = resumo[:800]
 
-        except:
-            chat_data["memoria_resumo"] = (memoria_atual + " " + pergunta)[:800]
+    except:
+        chat_data["memoria_resumo"] = (memoria_atual + " " + pergunta)[:800]
 
-    def buscar_memoria(pergunta):
-        docs = memory_store.similarity_search(pergunta, k=3)
-        return "\n".join([d.page_content for d in docs])
+def buscar_memoria(pergunta):
+    docs = memory_store.similarity_search(pergunta, k=3)
+    return "\n".join([d.page_content for d in docs])
 
-    # =========================
-    # RAG
-    # =========================
-    def validar_contexto(pergunta, docs_scores,
-                        threshold_vector=0.6,
-                        threshold_reranker=0.3):
+# =========================
+# RAG
+# =========================
+def validar_contexto(pergunta, docs_scores,
+                     threshold_vector=0.6,
+                     threshold_reranker=0.3):
 
-        if not docs_scores:
-            return False
+    if not docs_scores:
+        return False
 
-        if docs_scores[0][1] > threshold_vector:
-            return False
+    if docs_scores[0][1] > threshold_vector:
+        return False
 
-        docs = [doc for doc, _ in docs_scores[:3]]
-        pares = [(pergunta, d.page_content) for d in docs]
-        scores = reranker.predict(pares)
+    docs = [doc for doc, _ in docs_scores[:3]]
+    pares = [(pergunta, d.page_content) for d in docs]
+    scores = reranker.predict(pares)
 
-        return max(scores) >= threshold_reranker
+    return max(scores) >= threshold_reranker
 
-    def melhor_trecho(pergunta, texto):
-        partes = texto.split(".")
-        if len(partes) < 2:
-            return texto[:200]
+def melhor_trecho(pergunta, texto):
+    partes = texto.split(".")
+    if len(partes) < 2:
+        return texto[:200]
 
-        emb_q = embedder.encode(pergunta, convert_to_tensor=True)
-        emb_s = embedder.encode(partes, convert_to_tensor=True)
+    emb_q = embedder.encode(pergunta, convert_to_tensor=True)
+    emb_s = embedder.encode(partes, convert_to_tensor=True)
 
-        scores = util.cos_sim(emb_q, emb_s)[0]
-        return partes[scores.argmax().item()]
+    scores = util.cos_sim(emb_q, emb_s)[0]
+    return partes[scores.argmax().item()]
 
-    # =========================
-    # PROMPT
-    # =========================
-    def montar_prompt(contexto_rag, memoria, pergunta):
-        chat_data = st.session_state["chats"][st.session_state["chat_atual"]]
+# =========================
+# PROMPT
+# =========================
+def montar_prompt(contexto_rag, memoria, pergunta):
+    chat_data = st.session_state["chats"][st.session_state["chat_atual"]]
 
-        return f"""
+    return f"""
 Responda em texto corrido.
 
 Prioridade:
@@ -247,116 +207,120 @@ PERGUNTA:
 {pergunta}
 """
 
-    # =========================
-    # LLM
-    # =========================
-    def gerar_resposta(prompt):
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": "Seja claro."},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.2
-            }
-        )
+# =========================
+# LLM
+# =========================
+def gerar_resposta(prompt):
+    r = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": "Seja claro."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2
+        }
+    )
 
-        return r.json()["choices"][0]["message"]["content"]
+    return r.json()["choices"][0]["message"]["content"]
 
-    # =========================
-    # ENVIO
-    # =========================
-    def enviar():
-        pergunta = st.session_state["input"]
+# =========================
+# ENVIO
+# =========================
+def enviar():
+    pergunta = st.session_state["input"]
 
-        if not pergunta.strip():
-            return
+    if not pergunta.strip():
+        return
 
-        nome_chat_atual = st.session_state["chat_atual"]
-        chat_data = st.session_state["chats"][nome_chat_atual]
+    nome_chat_atual = st.session_state["chat_atual"]
+    chat_data = st.session_state["chats"][nome_chat_atual]
 
-        if len(chat_data["mensagens"]) == 0:
-            novo_nome = gerar_nome_chat(pergunta)
+    # 🔥 RENOMEAR CHAT NA PRIMEIRA PERGUNTA
+    if len(chat_data["mensagens"]) == 0:
+        novo_nome = gerar_nome_chat(pergunta)
 
-            contador = 1
-            base_nome = novo_nome
+        contador = 1
+        base_nome = novo_nome
 
-            while novo_nome in st.session_state["chats"]:
-                contador += 1
-                novo_nome = f"{base_nome} ({contador})"
+        while novo_nome in st.session_state["chats"]:
+            contador += 1
+            novo_nome = f"{base_nome} ({contador})"
 
-            st.session_state["chats"][novo_nome] = st.session_state["chats"].pop(nome_chat_atual)
-            st.session_state["chat_atual"] = novo_nome
+        st.session_state["chats"][novo_nome] = st.session_state["chats"].pop(nome_chat_atual)
+        st.session_state["chat_atual"] = novo_nome
 
-            chat_data = st.session_state["chats"][novo_nome]
+        chat_data = st.session_state["chats"][novo_nome]
 
-        usar_memoria = pergunta_dependente(pergunta)
+    usar_memoria = pergunta_dependente(pergunta)
 
-        docs_scores = vectorstore.similarity_search_with_score(pergunta, k=4)
+    docs_scores = vectorstore.similarity_search_with_score(pergunta, k=4)
 
-        contexto_rag = ""
-        fontes = []
+    contexto_rag = ""
+    fontes = []
 
-        if docs_scores and not usar_memoria and validar_contexto(pergunta, docs_scores):
-            docs = [doc for doc, _ in docs_scores]
+    if docs_scores and not usar_memoria and validar_contexto(pergunta, docs_scores):
+        docs = [doc for doc, _ in docs_scores]
 
-            for doc in docs:
-                conteudo = doc.page_content
-                contexto_rag += conteudo + "\n"
+        for doc in docs:
+            conteudo = doc.page_content
+            contexto_rag += conteudo + "\n"
 
-                fontes.append({
-                    "arquivo": os.path.basename(doc.metadata.get("source", "")),
-                    "pagina": doc.metadata.get("page", 0),
-                    "trecho": melhor_trecho(pergunta, conteudo)
-                })
+            fontes.append({
+                "arquivo": os.path.basename(doc.metadata.get("source", "")),
+                "pagina": doc.metadata.get("page", 0),
+                "trecho": melhor_trecho(pergunta, conteudo)
+            })
 
-        memoria = buscar_memoria(pergunta)
+    memoria = buscar_memoria(pergunta)
 
-        prompt = montar_prompt(contexto_rag, memoria, pergunta)
+    prompt = montar_prompt(contexto_rag, memoria, pergunta)
 
-        resposta = gerar_resposta(prompt)
+    resposta = gerar_resposta(prompt)
 
-        salvar_memoria(pergunta, resposta)
-        atualizar_resumo(pergunta, resposta)
+    salvar_memoria(pergunta, resposta)
+    atualizar_resumo(pergunta, resposta)
 
-        chat_data["mensagens"].append({
-            "pergunta": pergunta,
-            "resposta": resposta,
-            "fontes": fontes
-        })
+    chat_data["mensagens"].append({
+        "pergunta": pergunta,
+        "resposta": resposta,
+        "fontes": fontes
+    })
 
-        st.session_state["input"] = ""
+    st.session_state["input"] = ""
 
-    # =========================
-    # UI
-    # =========================
-    st.title("🤖 Chat RAG com Memória Avançada")
+# =========================
+# UI
+# =========================
+st.title("🤖 Chat RAG com Memória Avançada")
 
-    chat_data = st.session_state["chats"][st.session_state["chat_atual"]]
+chat_data = st.session_state["chats"][st.session_state["chat_atual"]]
 
-    for item in chat_data["mensagens"]:
-        st.markdown(f"### 👤 {item['pergunta']}")
-        st.markdown(item["resposta"])
+for item in chat_data["mensagens"]:
+    st.markdown(f"### 👤 {item['pergunta']}")
+    st.markdown(item["resposta"])
 
-        if item["fontes"]:
-            with st.expander("📚 Fontes"):
-                for f in item["fontes"]:
-                    st.markdown(f"""
+    if item["fontes"]:
+        with st.expander("📚 Fontes"):
+            for f in item["fontes"]:
+                st.markdown(f"""
 **{f['arquivo']} (pág {f['pagina']+1})**
 
 > {f['trecho']}
 """)
 
-        st.divider()
+    st.divider()
 
-    st.text_input(
-        "Digite sua pergunta...",
-        key="input",
-        on_change=enviar
-    )
+# =========================
+# INPUT
+# =========================
+st.text_input(
+    "Digite sua pergunta...",
+    key="input",
+    on_change=enviar
+)
